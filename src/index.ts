@@ -10,17 +10,31 @@ import {
   TurnContext,
   ActivityTypes,
 } from "botbuilder";
+import { MicrosoftAppCredentials } from "botframework-connector";
 
 // This bot's main dialog.
 import { SearchApp } from "./searchApp";
 import config from "./config";
+
+// Trust Canary Bot Framework service URLs
+// This is required for Canary/PPE environments where the service URL is different from production
+MicrosoftAppCredentials.trustServiceUrl("https://canary.botapi.skype.com");
+MicrosoftAppCredentials.trustServiceUrl("https://canary.botapi.skype.com/amer/");
+// console.log("[Auth] Trusted Canary service URLs");
+
+// Create adapter.
+// See https://aka.ms/about-bot-adapter to learn more about adapters.
+// console.log("[Auth Debug] BOT_ID:", config.botId);
+// console.log("[Auth Debug] BOT_PASSWORD:", config.botPassword ? config.botPassword.substring(0, 10) + "..." : "MISSING");
+// console.log("[Auth Debug] BOT_TENANT_ID:", config.botTenantId);
 
 // Create adapter.
 // See https://aka.ms/about-bot-adapter to learn more about adapters.
 const credentialsFactory = new ConfigurationServiceClientCredentialFactory({
   MicrosoftAppId: config.botId,
   MicrosoftAppPassword: config.botPassword,
-  MicrosoftAppType: "MultiTenant",
+  MicrosoftAppType: "SingleTenant",
+  MicrosoftAppTenantId: config.botTenantId,
 });
 
 const botFrameworkAuthentication = new ConfigurationBotFrameworkAuthentication(
@@ -137,28 +151,43 @@ server.listen(process.env.port || process.env.PORT || 3978, () => {
 
 // Listen for incoming requests.
 server.post("/api/messages", async (req, res) => {
+    // Debug incoming activity
+  if (req.body) {
+    // console.log(`\n[Incoming Activity]`);
+    // console.log(`  Type: ${req.body.type}`);
+    // console.log(`  ServiceUrl: ${req.body.serviceUrl}`);
+    // console.log(`  From: ${req.body.from?.id}`);
+    // console.log(`  Conversation: ${req.body.conversation?.id?.substring(0, 30)}...`);
+    
+    // Dynamically trust the incoming service URL (for Canary/PPE environments)
+    if (req.body.serviceUrl) {
+      MicrosoftAppCredentials.trustServiceUrl(req.body.serviceUrl);
+      // console.log(`  [Auth] Trusted serviceUrl: ${req.body.serviceUrl}`);
+    }
+  }
+  
   await adapter.process(req, res, async (context) => {
     await searchApp.run(context);
-    console.log("------------------------");
-    console.log("-------Response(Incoming Request)---------");
-    console.log(res);
+    // console.log("------------------------");
+    // console.log("-------Response(Incoming Request)---------");
+    // console.log(res);
   });
 });
 
-server.on("after", function (req, res, route, error) {
-  console.log("------------------------");
-  console.log("------Request(in after method)---------");
-  // console.log(req.route.path);
-  console.log(req.body);
-  console.log("------------------------");
-  console.log("-------Response(in after method)---------");
-  console.log(`Http Status: ${res.statusCode}`);
-  console.log(`Has Body: ${res._hasBody}`);
-  //console.log(`Response Headers: ${res.getHeaders()}`);
-  console.log(`Response Headers: ${res.header('ms-cv')}`);
-  console.log(res._data);
-  console.log(res.body);
-});
+// server.on("after", function (req, res, route, error) {
+//   console.log("------------------------");
+//   console.log("------Request(in after method)---------");
+//   // console.log(req.route.path);
+//   console.log(req.body);
+//   console.log("------------------------");
+//   console.log("-------Response(in after method)---------");
+//   console.log(`Http Status: ${res.statusCode}`);
+//   console.log(`Has Body: ${res._hasBody}`);
+//   //console.log(`Response Headers: ${res.getHeaders()}`);
+//   console.log(`Response Headers: ${res.header('ms-cv')}`);
+//   console.log(res._data);
+//   console.log(res.body);
+// });
 
 // server.on("pre", function (req, res) {
 //   console.log("---------In Pre Method------------");

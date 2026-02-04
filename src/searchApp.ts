@@ -18,6 +18,77 @@ import actionHandler from "./adaptiveCards/cardHandler";
 import { CreateActionErrorResponse, CreateInvokeResponse } from "./adaptiveCards/utils";
 import { setTimeout as nodeTimeout} from "timers/promises";
 
+/**
+ * Logs the outgoing HTTP request details for sendActivity calls.
+ * Captures headers and body payload for Postman replication.
+ */
+async function logOutgoingActivityRequest(
+  context: TurnContext,
+  activity: Partial<Activity>
+): Promise<void> {
+  try {
+    const serviceUrl = context.activity.serviceUrl;
+    const conversationId = context.activity.conversation.id;
+    
+    // Build the endpoint URL that the Bot Framework will call
+    const endpoint = `${serviceUrl}v3/conversations/${encodeURIComponent(conversationId)}/activities`;
+    
+    // Get the connector client to access credentials info
+    const connectorClient = context.turnState.get(context.adapter.ConnectorClientKey);
+    
+    // Build the request body (the activity payload)
+    const requestBody: Partial<Activity> = {
+      type: activity.type || ActivityTypes.Message,
+      text: activity.text,
+      entities: activity.entities,
+      attachments: activity.attachments,
+      from: context.activity.recipient, // Bot's identity
+      recipient: context.activity.from, // User's identity
+      conversation: context.activity.conversation,
+      replyToId: context.activity.id,
+      locale: context.activity.locale,
+      ...activity
+    };
+
+    // Standard Bot Framework headers
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer <YOUR_ACCESS_TOKEN>', // Token would be obtained from credentials
+      'User-Agent': 'Microsoft-BotFramework/3.1',
+    };
+
+    // Try to get the actual auth token if available
+    if (connectorClient?.credentials?.getToken) {
+      try {
+        const tokenResponse = await connectorClient.credentials.getToken();
+        if (tokenResponse) {
+          headers['Authorization'] = `Bearer ${tokenResponse}`;
+        }
+      } catch (tokenError) {
+        console.log('[LogRequest] Could not retrieve actual token, using placeholder');
+      }
+    }
+
+    console.log('\n' + '='.repeat(80));
+    console.log('📤 OUTGOING SENDACTIVITY REQUEST - POSTMAN EXPORT');
+    console.log('='.repeat(80));
+    console.log('\n🔗 ENDPOINT (POST):');
+    console.log(endpoint);
+    console.log('\n📋 HEADERS:');
+    console.log(JSON.stringify(headers, null, 2));
+    console.log('\n📦 REQUEST BODY:');
+    console.log(JSON.stringify(requestBody, null, 2));
+    console.log('\n📝 CURL COMMAND:');
+    console.log(`curl -X POST "${endpoint}" \\`);
+    console.log(`  -H "Content-Type: application/json" \\`);
+    console.log(`  -H "Authorization: ${headers['Authorization']}" \\`);
+    console.log(`  -d '${JSON.stringify(requestBody)}'`);
+    console.log('\n' + '='.repeat(80) + '\n');
+  } catch (error) {
+    console.error('[LogRequest] Error logging outgoing request:', error);
+  }
+}
+
 const streamingPacketsText = ["Prem streaming- Second informative request that is meant to be a little longer than the first one",
   `<p>In a quiet forest, a small stream flowed peacefully through the trees. It was no ordinary stream, for it was said to hold magical powers that could grant wishes to those who drank from its waters.<br/><br/>
 One day, a young girl named Lily stumbled upon the stream while wandering through the forest. She was lost and had been wandering for hours, but when she saw the stream, an overwhelming feeling of hope filled her heart.</p>`,
@@ -42,18 +113,18 @@ export class SearchApp extends TeamsActivityHandler {
     this.notifyContinuationActivity = notifyContinuationActivity;
     this.continuationParameters = continuationParameters;
 
-    this.onReactionsAdded(async (context, next) => {
-      const reactionsAdded = context.activity.reactionsAdded;
-      if (reactionsAdded && reactionsAdded.length > 0) {
-        for (let i = 0; i < reactionsAdded.length; i++) {
-          const reaction = reactionsAdded[i];
-          const newReaction = `You reacted with '${reaction.type}' to the following message: '${context.activity.replyToId}'`;
-          // Sends an activity to the sender of the incoming activity.
-          const resourceResponse = context.sendActivity(newReaction);
-          // Save information about the sent message and its ID (resourceResponse.id).
-        }
-      }
-    });
+    // this.onReactionsAdded(async (context, next) => {
+    //   const reactionsAdded = context.activity.reactionsAdded;
+    //   if (reactionsAdded && reactionsAdded.length > 0) {
+    //     for (let i = 0; i < reactionsAdded.length; i++) {
+    //       const reaction = reactionsAdded[i];
+    //       const newReaction = `You reacted with '${reaction.type}' to the following message: '${context.activity.replyToId}'`;
+    //       // Sends an activity to the sender of the incoming activity.
+    //       const resourceResponse = context.sendActivity(newReaction);
+    //       // Save information about the sent message and its ID (resourceResponse.id).
+    //     }
+    //   }
+    // });
   }
 
   public async onMessageActivity(context: TurnContext): Promise<void> {
@@ -74,7 +145,7 @@ export class SearchApp extends TeamsActivityHandler {
         throw new Error("Error sending activity: " + error.message); // Propagate error
       }
     } else {
-      this.addOrUpdateChannelPostParameters(context);
+      //this.addOrUpdateChannelPostParameters(context);
       await context.sendActivity(this.getBotAIGenActivity(context));
     }
   }
@@ -121,7 +192,7 @@ export class SearchApp extends TeamsActivityHandler {
     addAttachments: boolean = false,
     packetDelay: number = 900
   ): Promise<void> {
-    const result = await context.sendActivity({
+    const initialActivity: Partial<Activity> = {
       type: ActivityTypes.Typing,
       text: "Prem streaming- first informative request that is not too long",
       entities: [
@@ -131,7 +202,12 @@ export class SearchApp extends TeamsActivityHandler {
           streamSequence: 1, // (required) incremental integer; must be present for start and continue streaming request, but must not be set for final streaming request.
         },
       ],
-    });
+    };
+
+    // Log the outgoing request details for Postman replication
+    await logOutgoingActivityRequest(context, initialActivity);
+
+    const result = await context.sendActivity(initialActivity);
 
     const streamId = result.id;
     console.log(`streamId: ${streamId}`);
@@ -168,6 +244,7 @@ export class SearchApp extends TeamsActivityHandler {
     isChannelPost: boolean = false,
     isEdited: boolean = false
   ): Partial<Activity> {
+    console.log(`getBotAIGenActivity called with isChannelPost: ${isChannelPost}, isEdited: ${isEdited}`);
     const edited = isEdited ? "Edited-" : "";
     const powerpointImageObj = { name: "microsoft powerpoint" };
     const excelImageObj = { name: "microsoft excel" };
@@ -198,13 +275,26 @@ export class SearchApp extends TeamsActivityHandler {
     return {
       type: "message",
       value: { requestId: "1234" },
-      attachments: [this.getChartAdaptiveCard()],
-      text: `[1] You said: ${context.activity.text} in ${
-        isChannelPost ? "channel post" : "reply"
-      }. From your inventory The information about chai in the Prkare Inventory indicates that it is supplied by Contoso Beverage Company of London with 349 units in stock. The stock information includes a unit price of 18 USD, an average discount of 8.6%, and an inventory valuation of 6,282 USD. There are currently 349 units in stock, with a reorder level of 25 units and a revenue this period of 12,788 USD.[1]
-      From the web There are also references to a "Chai's Inventory Sorter" which is a mod for Minecraft that allows for inventory sorting and management. However, this is likely not related to your query. [2]
-      If you need more detailed information or specific actions to be taken regarding the chai inventory, please let me know how I can further assist you.`,
+      // textFormat: "plain", //extendedmarkdown
+      //attachments: [this.getChartInputActionsCard()],
+      text: `[1] You said: ${context.activity.text} in ${isChannelPost ? "channel post" : "reply"}. **This is markdown content** back to normal text. Citation-1: [1]
+      Starting new line in the content **This is again markdown content**. Citation-2: [2]. <script>alert("XSS Attack Testing")</script>.`,
       channelData: { feedbackLoop: { type: "default" } },
+      suggestedActions: {
+        to: [context.activity.from.id],
+        "actions": [
+          {
+            "type": "imBack",
+            "title": "Create a new query identifying overdue tasks",
+            "value": "Create a new query identifying overdue tasks"
+          },
+          {
+            "type": "imBack",
+            "title": "Create a new work item for this feature",
+            "value": "Create a new work item for this feature"
+          }
+        ]
+      },
       // channelData: {
       //   feedbackLoopEnabled: true // Enable feedback buttons
       // },
@@ -216,16 +306,12 @@ export class SearchApp extends TeamsActivityHandler {
           "@id": "",
           additionalType: ["AIGeneratedContent"],
           usageInfo: {
-            name: `${
-              isChannelPost
+            name: `${isChannelPost
                 ? "Company level sensitivity"
                 : "Org level sensitivity"
-            }`,
-            description: `Please don't share outside of the ${
-              isChannelPost ? "company" : "organization"
-            }`,
-            "@id": "1a19d03a-48bc-4359-8038-5b5f6d5847c3",
-            position: 5,
+              }`,
+            description: `Please don't share outside of the ${isChannelPost ? "company" : "organization"
+              }`
           },
           citation: [
             {
@@ -233,8 +319,8 @@ export class SearchApp extends TeamsActivityHandler {
               position: 1,
               appearance: {
                 "@type": "DigitalDocument",
-                name: "Beverages data in the company inventory reference list very very long test name for testing the citation name",
-                text: JSON.stringify(this.getChartAdaptiveCard().content),
+                name: "Beverages data in the company", // inventory reference list very very long test name for testing the citation name",
+                text: JSON.stringify(this.getChartInputActionsCard().content),
                 url: "https://www.microsoft.com",
                 abstract: `From the web There are also references to a "Chai's Inventory Sorter" which is a mod for Minecraft that allows for inventory sorting and management. However, this is likely not related to your query. 2
                 If you need more detailed information or specific actions to be taken regarding the chai inventory.`,
@@ -258,11 +344,11 @@ export class SearchApp extends TeamsActivityHandler {
               appearance: {
                 "@type": "DigitalDocument",
                 name: "Products revenue data in the company",
-                text: JSON.stringify(this.getChartAdaptiveCard().content),
+                //text: JSON.stringify(this.getChartAdaptiveCard().content),
                 url: "https://www.microsoft.com",
                 abstract: `From the web There are also references to a "Chai's Inventory Sorter" which is a mod for Minecraft that allows for inventory sorting and management. However, this is likely not related to your query. 2
                 If you need more detailed information or specific actions to be taken regarding the chai inventory.`,
-                encodingFormat: "application/vnd.microsoft.card.adaptive",
+                //encodingFormat: "application/vnd.microsoft.card.adaptive",
                 image: citation2ImageObj,
                 keywords: [
                   "Company Data",
@@ -271,16 +357,8 @@ export class SearchApp extends TeamsActivityHandler {
                 ],
                 usageInfo: {
                   "@type": "CreativeWork",
-                  "@id": "usage-info-1",
                   description: "Please don't share outside of the company",
-                  name: "Company level sensitivity",
-                  position: 5,
-                  pattern: {
-                    "@type": "DefinedTerm",
-                    inDefinedTermSet: "https://www.w3.org/TR/css-values-4/",
-                    name: "color",
-                    termCode: "#454545",
-                  },
+                  name: "Company level sensitivity"
                 },
               },
               claimInterpreter: {
@@ -302,6 +380,13 @@ export class SearchApp extends TeamsActivityHandler {
       $schema: "https://adaptivecards.io/schemas/adaptive-card.json",
       version: "1.6",
       body: [
+        {
+          type: "TextBlock",
+          text: "TextBlock element to show dynamic content with some input elements below followed by actions",
+          size: "large",
+          separator: true,
+          spacing: "large",
+        },
         {
           type: "Input.Text",
           placeholder: "Placeholder text",
@@ -357,7 +442,47 @@ export class SearchApp extends TeamsActivityHandler {
           title: "Action.Submit",
           conditionallyEnabled: true,
           associatedInputs: "auto",
+          data: {
+            hiddenKey: 456.12,
+            msteams: {
+              type: "invoke"
+            }
+          }
         },
+        {
+          type: "Action.Submit",
+          title: "Diff Action.Submit",
+          data: {
+            hiddenKey: 123.45,
+            msteams: {
+              type: "invoke"
+            }
+          }
+        },
+        {
+          type: "Action.OpenUrl",
+          title: "Action.OpenUrl",
+          url: "https://www.microsoft.com",
+        },
+        {
+          type: "Action.OpenUrl",
+          title: "OpenUrl Info",
+          url: "https://youtu.be/ceV3RsG946s?si=7Z4eSo2Ak8ZYXVZW",
+        },
+        {
+          type: "Action.Execute",
+          id: "executeAction",
+          title: "Action.Execute",
+          verb: "submitVerb",
+          data: {
+            key1: "value1",
+            key2: "value2",
+            msTeams: {
+              type: "imBack",
+              value: "value3",
+            },
+          },
+        }
       ],
     });
   }
@@ -534,7 +659,47 @@ export class SearchApp extends TeamsActivityHandler {
           title: "Action.Submit",
           conditionallyEnabled: true,
           associatedInputs: "auto",
+          data: {
+            hiddenKey: 456.12,
+            msteams: {
+              type: "invoke"
+            }
+          }
         },
+        {
+          type: "Action.Submit",
+          title: "Diff Action.Submit",
+          data: {
+            hiddenKey: 123.45,
+            msteams: {
+              type: "invoke"
+            }
+          }
+        },
+        {
+          type: "Action.OpenUrl",
+          title: "Action.OpenUrl",
+          url: "https://www.microsoft.com",
+        },
+        {
+          type: "Action.OpenUrl",
+          title: "OpenUrl Info",
+          url: "https://youtu.be/ceV3RsG946s?si=7Z4eSo2Ak8ZYXVZW",
+        },
+        {
+          type: "Action.Execute",
+          id: "executeAction",
+          title: "Action.Execute",
+          verb: "submitVerb",
+          data: {
+            key1: "value1",
+            key2: "value2",
+            msTeams: {
+              type: "imBack",
+              value: "value3",
+            },
+          },
+        }
       ],
     });
   }
@@ -565,27 +730,31 @@ export class SearchApp extends TeamsActivityHandler {
 
   public async onInvokeActivity(context: TurnContext): Promise<InvokeResponse> {
     try {
-      switch (context.activity.name) {
-        case "message/submitAction":
-          return CreateInvokeResponse(200);
-        case "composeExtension/query":
-          return {
-            status: 200,
-            body: await this.handleTeamsMessagingExtensionQuery(
-              context,
-              context.activity.value
-            ),
-          };
-        case "adaptiveCard/action":
-          return {
-            status: 200,
-            body: await this.onAdaptiveCardInvoke(context),
-          };
-        default:
-          return {
-            status: 200,
-            body: `Unknown invoke activity handled as default- ${context.activity.name}`,
-          };
+      if (context.activity.type === "invoke") {
+        return CreateInvokeResponse(200);
+      } else {
+        switch (context.activity.name) {
+          case "message/submitAction":
+            return CreateInvokeResponse(200);
+          case "composeExtension/query":
+            return {
+              status: 200,
+              body: await this.handleTeamsMessagingExtensionQuery(
+                context,
+                context.activity.value
+              ),
+            };
+          case "adaptiveCard/action":
+            return {
+              status: 200,
+              body: await this.onAdaptiveCardInvoke(context),
+            };
+          default:
+            return {
+              status: 200,
+              body: `Unknown invoke activity handled as default- ${context.activity.name}`,
+            };
+        }
       }
     } catch (err) {
       console.log(`Error in onInvokeActivity: ${err}`);
