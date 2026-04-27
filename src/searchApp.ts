@@ -275,7 +275,7 @@ export class SearchApp extends TeamsActivityHandler {
     return {
       type: "message",
       value: { requestId: "1234" },
-      // textFormat: "plain", //extendedmarkdown
+      textFormat: "extendedmarkdown",
       //attachments: [this.getChartInputActionsCard()],
       text: `[1] You said: ${context.activity.text} in ${isChannelPost ? "channel post" : "reply"}. **This is markdown content** back to normal text. Citation-1: [1]
       Starting new line in the content **This is again markdown content**. Citation-2: [2]. <script>alert("XSS Attack Testing")</script>.`,
