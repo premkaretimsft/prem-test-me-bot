@@ -14,12 +14,12 @@ import { MicrosoftAppCredentials } from "botframework-connector";
 
 // This bot's main dialog.
 import { SearchApp } from "./searchApp";
-import config from "./config";
+import config, { CANARY_SERVICE_URL } from "./config";
 
 // Trust Canary Bot Framework service URLs
 // This is required for Canary/PPE environments where the service URL is different from production
 MicrosoftAppCredentials.trustServiceUrl("https://canary.botapi.skype.com");
-MicrosoftAppCredentials.trustServiceUrl("https://canary.botapi.skype.com/amer/");
+MicrosoftAppCredentials.trustServiceUrl(CANARY_SERVICE_URL);
 // console.log("[Auth] Trusted Canary service URLs");
 
 // Create adapter.
@@ -66,6 +66,55 @@ const onTurnErrorHandler = async (context: TurnContext, error: Error) => {
 
 // Set the onTurnError for the singleton CloudAdapter.
 adapter.onTurnError = onTurnErrorHandler;
+
+// Force outgoing responses through Canary, with fallback to the original
+// serviceUrl on auth failure. This runs AFTER the adapter has validated the
+// inbound JWT's `serviceurl` claim, so it doesn't break inbound auth.
+adapter.use({
+  async onTurn(context, next): Promise<void> {
+    const originalServiceUrl = context.activity.serviceUrl;
+
+    // applyConversationReference (inside TurnContext.sendActivities) copies
+    // context.activity.serviceUrl onto every outgoing activity, so this is
+    // what actually pins the egress URL.
+    context.activity.serviceUrl = CANARY_SERVICE_URL;
+
+    // Hook outbound sends so we can retry on the original URL if Canary
+    // rejects the call (e.g., 401 / "ServiceUrl claim do not match").
+    context.onSendActivities(async (ctx, activities, sendNext) => {
+      try {
+        return await sendNext();
+      } catch (err) {
+        const message = (err as Error)?.message || "";
+        const status = (err as any)?.statusCode;
+        const isServiceUrlAuth =
+          status === 401 ||
+          /serviceurl/i.test(message) ||
+          /unauthorized/i.test(message);
+
+        if (!isServiceUrlAuth || !originalServiceUrl) {
+          throw err;
+        }
+
+        console.warn(
+          `[Canary] send to ${CANARY_SERVICE_URL} failed (${message}). ` +
+          `Falling back to original serviceUrl: ${originalServiceUrl}`
+        );
+
+        // Restore original serviceUrl on each activity AND on the turn context
+        // so any subsequent sends this turn don't repeat the failure.
+        activities.forEach((a) => {
+          a.serviceUrl = originalServiceUrl;
+        });
+        ctx.activity.serviceUrl = originalServiceUrl;
+
+        return await sendNext();
+      }
+    });
+
+    await next();
+  },
+});
 
 // Create the bot that will handle incoming messages.
 const continuationParameters: {} = {};
@@ -158,14 +207,19 @@ server.post("/api/messages", async (req, res) => {
     // console.log(`  ServiceUrl: ${req.body.serviceUrl}`);
     // console.log(`  From: ${req.body.from?.id}`);
     // console.log(`  Conversation: ${req.body.conversation?.id?.substring(0, 30)}...`);
-    
+
     // Dynamically trust the incoming service URL (for Canary/PPE environments)
     if (req.body.serviceUrl) {
       MicrosoftAppCredentials.trustServiceUrl(req.body.serviceUrl);
       // console.log(`  [Auth] Trusted serviceUrl: ${req.body.serviceUrl}`);
     }
+    // NOTE: do NOT rewrite req.body.serviceUrl here. The adapter validates the
+    // JWT's `serviceurl` claim against this value before bot logic runs, so
+    // changing it here causes "ServiceUrl claim do not match" (401). The
+    // override-to-Canary now happens via adapter middleware (after auth) with
+    // a fallback to the original URL on failure.
   }
-  
+
   await adapter.process(req, res, async (context) => {
     await searchApp.run(context);
     // console.log("------------------------");
@@ -189,17 +243,17 @@ server.post("/api/messages", async (req, res) => {
 //   console.log(res.body);
 // });
 
-// server.on("pre", function (req, res) {
-//   console.log("---------In Pre Method------------");
-//   console.log("------Request---------");
-//   // console.log(req.route.path);
-//   console.log(req.body);
-//   console.log(req.Headers);
-//   console.log("-------Response---------");
-//   console.log(`Http Status: ${res.statusCode}`);
-//   console.log(`Has Body: ${res._hasBody}`);
-//   //console.log(`Response Headers: ${res.getHeaders()}`);
-//   console.log(`Alternate Response Headers: ${res.header('ms-cv')}`);
-//   console.log(res._data);
-//   console.log(res.body);
-// });
+server.on("pre", function (req, res) {
+  // console.log("---------In Pre Method------------");
+  // console.log("------Request---------");
+  // // console.log(req.route.path);
+  // console.log(req.body);
+  // console.log(req.Headers);
+  // console.log("-------Response---------");
+  // console.log(`Http Status: ${res.statusCode}`);
+  // console.log(`Has Body: ${res._hasBody}`);
+  // //console.log(`Response Headers: ${res.getHeaders()}`);
+  // console.log(`Alternate Response Headers: ${res.header('ms-cv')}`);
+  // console.log(res._data);
+  // console.log(res.body);
+});
