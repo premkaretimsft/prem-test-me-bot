@@ -1,5 +1,7 @@
 import {
   TeamsActivityHandler,
+  TeamsInfo,
+  teamsGetChannelId,
   TurnContext,
   MessagingExtensionQuery,
   MessagingExtensionResponse,
@@ -11,6 +13,7 @@ import {
   Attachment,
   MessageFactory,
 } from "botbuilder";
+import config from "./config";
 import productSearchCommand from "./messageExtensions/productSearchCommand";
 import discountedSearchCommand from "./messageExtensions/discountSearchCommand";
 import revenueSearchCommand from "./messageExtensions/revenueSearchCommand";
@@ -124,6 +127,8 @@ export class SearchApp extends TeamsActivityHandler {
     "Suggested Action Invoke",
     "EM Mention (premk)",
     "Non-EM Mention (premk)",
+    "EM Private Entities",
+    "Non-EM AI + Sensitivity + Feedback",
   ];
 
   // Fixed user identity used by the "EM Mention (premk)" / "Non-EM Mention (premk)" menu
@@ -215,6 +220,10 @@ export class SearchApp extends TeamsActivityHandler {
             ? ` — ExtendedMarkdown message with an @mention of ${SearchApp.PREMK_MENTION.id}`
             : name === "Non-EM Mention (premk)"
             ? ` — regular (non-EM) message with an @mention of ${SearchApp.PREMK_MENTION.id}`
+            : name === "EM Private Entities"
+            ? " — ExtendedMarkdown message carrying a sample `privateEntities` entity (value = stringified JSON); APX stamps it onto the message properties when ExtendedMarkdownPrivateEntitiesEnabled is on"
+            : name === "Non-EM AI + Sensitivity + Feedback"
+            ? " — regular (non-EM) message with the AI-generated label, a root-level sensitivity label, per-citation sensitivity labels (2 citations), and the feedback-loop opt-in"
             : "";
         return `${i + 1}. **${name}**${note}`;
       })
@@ -301,6 +310,66 @@ export class SearchApp extends TeamsActivityHandler {
           },
         ],
       });
+      return;
+    }
+
+    if (selection === "EM Private Entities") {
+      // ExtendedMarkdown message that carries a sample `privateEntities` entity.
+      // On the APX side, the EM encoder's processPrivateEntities looks for an
+      // entity whose type is "privateEntities" (case-insensitive), reads its
+      // stringified-JSON `value`, and stamps it onto the outgoing ChatService
+      // message properties (MessagePropertiesKeys.PrivateEntities) — gated by the
+      // ExtendedMarkdownPrivateEntitiesEnabled flag (sub-gated under EM). Per the
+      // bot→APX contract the `value` is a stringified JSON object at the root.
+      const samplePrivateEntities = {
+        schemaVersion: "1.0",
+        source: "prem-test-me-bot",
+        entities: [
+          { id: "ent-001", kind: "product", name: "Chai", sku: "NWND-1" },
+          { id: "ent-002", kind: "person", displayName: "Nancy Davolio" },
+        ],
+        metadata: { generatedAt: new Date().toISOString(), confidential: true },
+      };
+      const md =
+        `# Private Entities demo\n\n` +
+        `This is an **ExtendedMarkdown** message that carries a sample ` +
+        `\`privateEntities\` entity in its payload. The entity body is **not** ` +
+        `rendered in the message — APX extracts its \`value\` and stamps it onto ` +
+        `the message properties when \`ExtendedMarkdownPrivateEntitiesEnabled\` is on.`;
+      await context.sendActivity(
+        this.buildExtendedMarkdownActivity(context, md, {
+          withPrivateEntities: samplePrivateEntities,
+        })
+      );
+      return;
+    }
+
+    if (selection === "Non-EM AI + Sensitivity + Feedback") {
+      // 1) Immediate response in the current conversation — 1:1 chat, group chat,
+      //    OR the channel reply chain where the bot was invoked. Unchanged behavior.
+      await context.sendActivity(this.buildNonEmAiSensitivityFeedbackActivity());
+
+      // 2) ONLY when invoked from a channel, ALSO post the same message as a new
+      //    top-level post in that channel (its own thread), in addition to the
+      //    reply above. Personal / group-chat experience is left untouched.
+      if (context.activity.conversation?.conversationType === "channel") {
+        const channelId = teamsGetChannelId(context.activity);
+        const botAppId = config.botId;
+        if (channelId && botAppId) {
+          // sendMessageToTeamsChannel creates a brand-new conversation (top-level
+          // post) in the channel, distinct from the reply sent above.
+          await TeamsInfo.sendMessageToTeamsChannel(
+            context,
+            this.buildNonEmAiSensitivityFeedbackActivity() as Activity,
+            channelId,
+            botAppId
+          );
+        } else {
+          console.warn(
+            `[Non-EM AI] channel post skipped — channelId=${channelId}, botAppId set=${!!botAppId}`
+          );
+        }
+      }
       return;
     }
 
@@ -504,6 +573,7 @@ export class SearchApp extends TeamsActivityHandler {
     opts: {
       withCitations?: boolean;
       withMention?: { id: string; name: string };
+      withPrivateEntities?: Record<string, unknown>;
     }
   ): Partial<Activity> {
     const schemaEntity: any = {
@@ -535,6 +605,17 @@ export class SearchApp extends TeamsActivityHandler {
       });
     }
 
+    if (opts.withPrivateEntities) {
+      // APX reads the stringified-JSON `value` off this entity (case-insensitive)
+      // and stamps it onto the ChatService message properties under the
+      // PrivateEntities key. The value must be a stringified JSON object at the
+      // root level, so JSON.stringify the sample object here.
+      entities.push({
+        type: "privateEntities",
+        value: JSON.stringify(opts.withPrivateEntities),
+      });
+    }
+
     const activity: Partial<Activity> = {
       type: "message",
       // serviceUrl is intentionally NOT set here. TurnContext.applyConversationReference
@@ -548,6 +629,34 @@ export class SearchApp extends TeamsActivityHandler {
     // botbuilder Activity typings, so it's attached via index access.
     (activity as any).textFormat = "extendedmarkdown";
     return activity;
+  }
+
+  // Builds the non-EM "AI + sensitivity + feedback" message used by menu option
+  // #23. Returns a FRESH activity each call (getSampleCitations() allocates new
+  // arrays) so the same payload can be sent both as the immediate reply and as a
+  // separate top-level channel post without sharing mutable state.
+  private buildNonEmAiSensitivityFeedbackActivity(): Partial<Activity> {
+    const aiEntity: any = {
+      type: "https://schema.org/Message",
+      "@type": "Message",
+      "@context": "https://schema.org",
+      "@id": "",
+      additionalType: ["AIGeneratedContent"],
+      usageInfo: {
+        "@type": "CreativeWork",
+        name: "Org level sensitivity",
+        description: "Please don't share outside of the organization",
+      },
+      citation: this.getSampleCitations(),
+    };
+    return {
+      type: "message",
+      text:
+        `**AI-generated summary.** Chai inventory looks healthy this quarter [1], ` +
+        `and revenue is trending up versus last period [2].`,
+      channelData: { feedbackLoop: { type: "default" } },
+      entities: [aiEntity],
+    };
   }
 
   private getSampleCitations(): any[] {
