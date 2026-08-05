@@ -17,3 +17,9 @@ lib/
 
 # Azurite storage
 _storage_emulator
+
+# scratch / temporary payload files
+temp.json
+
+# logs
+*.log

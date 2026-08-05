@@ -129,6 +129,14 @@ export class SearchApp extends TeamsActivityHandler {
     "Non-EM Mention (premk)",
     "EM Private Entities",
     "Non-EM AI + Sensitivity + Feedback",
+    "EM Credit Card (DLP)",
+    "Non-EM Credit Card (DLP)",
+    "Non-EM AC + Text",
+    "EM AC + Text",
+    "Non-EM Citations Table (repro)",
+    "EM Citations Table (repro)",
+    "Non-EM Citations Table (no sensitivity)",
+    "EM Citations Table (no sensitivity)",
   ];
 
   // Fixed user identity used by the "EM Mention (premk)" / "Non-EM Mention (premk)" menu
@@ -224,6 +232,22 @@ export class SearchApp extends TeamsActivityHandler {
             ? " — ExtendedMarkdown message carrying a sample `privateEntities` entity (value = stringified JSON); APX stamps it onto the message properties when ExtendedMarkdownPrivateEntitiesEnabled is on"
             : name === "Non-EM AI + Sensitivity + Feedback"
             ? " — regular (non-EM) message with the AI-generated label, a root-level sensitivity label, per-citation sensitivity labels (2 citations), and the feedback-loop opt-in"
+            : name === "EM Credit Card (DLP)"
+            ? " — ExtendedMarkdown message with fictitious credit-card details (Luhn-valid Visa test number + brand/expiry/CVV) to trip the tenant's Purview financial-info DLP policy"
+            : name === "Non-EM Credit Card (DLP)"
+            ? " — the SAME fictitious credit-card content as #24 but as a regular (non-EM / HTML) message (no textFormat), to compare DLP behavior EM vs non-EM"
+            : name === "Non-EM AC + Text"
+            ? " — regular (non-EM) message carrying BOTH text content and a simple adaptive card attachment in the same activity (no textFormat)"
+            : name === "EM AC + Text"
+            ? " — ExtendedMarkdown message carrying BOTH text content and a simple adaptive card attachment in the same activity (textFormat=extendedmarkdown), to compare card+text behavior EM vs non-EM"
+            : name === "Non-EM Citations Table (repro)"
+            ? " — regular (non-EM) message with the exact bug #4630824 repro payload: a markdown table whose cells carry citation markers [1] (x5), [2], [3], [4] plus 4 AI-generated citations. Reproduces the client's partial citation rendering inside table cells"
+            : name === "EM Citations Table (repro)"
+            ? " — the SAME citations-in-a-table payload as the non-EM repro but as an ExtendedMarkdown message (textFormat=extendedmarkdown), to confirm EM renders all citations inside the table"
+            : name === "Non-EM Citations Table (no sensitivity)"
+            ? " — same payload as #28 (Non-EM Citations Table) but with NO sensitivity/usageInfo at either the message level or the citation level, to isolate whether sensitivity affects citation rendering"
+            : name === "EM Citations Table (no sensitivity)"
+            ? " — same payload as #29 (EM Citations Table) but with NO sensitivity/usageInfo at either the message level or the citation level"
             : "";
         return `${i + 1}. **${name}**${note}`;
       })
@@ -344,6 +368,29 @@ export class SearchApp extends TeamsActivityHandler {
       return;
     }
 
+    if (selection === "EM Credit Card (DLP)") {
+      // ExtendedMarkdown (textFormat=extendedmarkdown) message carrying the shared
+      // fictitious credit-card content (see dlpCreditCardMarkdown). Pairs with
+      // "Non-EM Credit Card (DLP)" (#25) — identical content, EM transport — so the
+      // tenant's Purview financial-info DLP behavior can be A/B'd EM vs non-EM.
+      await context.sendActivity(
+        this.buildExtendedMarkdownActivity(context, this.dlpCreditCardMarkdown(), {})
+      );
+      return;
+    }
+
+    if (selection === "Non-EM Credit Card (DLP)") {
+      // Byte-identical credit-card content to #24, but sent as a REGULAR (non-EM)
+      // message: textFormat is intentionally left unset, so APX takes the default
+      // markdown->HTML (Markdig) path instead of the ExtendedMarkdown path. Isolates
+      // the EM vs non-EM variable for the DLP comparison.
+      await context.sendActivity({
+        type: "message",
+        text: this.dlpCreditCardMarkdown(),
+      });
+      return;
+    }
+
     if (selection === "Non-EM AI + Sensitivity + Feedback") {
       // 1) Immediate response in the current conversation — 1:1 chat, group chat,
       //    OR the channel reply chain where the bot was invoked. Unchanged behavior.
@@ -385,6 +432,76 @@ export class SearchApp extends TeamsActivityHandler {
         type: "message",
         attachments: [this.getCustomerPickerAdaptiveCardAttachment()],
       });
+      return;
+    }
+
+    if (selection === "Non-EM AC + Text") {
+      // Regular (non-EM) message that carries BOTH text content and a simple
+      // adaptive card attachment in the SAME activity. textFormat is intentionally
+      // left unset so APX takes the default markdown->HTML path for the text while
+      // the card rides along as an attachment. Pairs with "EM AC + Text" so the
+      // card+text combo behavior can be A/B'd EM vs non-EM.
+      await context.sendActivity({
+        type: "message",
+        text:
+          `Here's a **regular (non-EM)** message with text content **and** a simple ` +
+          `adaptive card attachment in the same activity.`,
+        attachments: [this.getSimpleAdaptiveCardAttachment()],
+      });
+      return;
+    }
+
+    if (selection === "EM AC + Text") {
+      // ExtendedMarkdown (textFormat=extendedmarkdown) message that carries BOTH text
+      // content and a simple adaptive card attachment in the SAME activity. Pairs with
+      // "Non-EM AC + Text" — identical intent, EM transport — to isolate the EM vs
+      // non-EM variable for the card+text combo.
+      const md =
+        `Here's an **ExtendedMarkdown** message with text content **and** a simple ` +
+        `adaptive card attachment in the same activity.`;
+      await context.sendActivity(
+        this.buildExtendedMarkdownActivity(context, md, {
+          attachments: [this.getSimpleAdaptiveCardAttachment()],
+        })
+      );
+      return;
+    }
+
+    if (selection === "Non-EM Citations Table (repro)") {
+      // Exact repro payload from bug #4630824 (Corina's comment) sent as a regular
+      // (non-EM / markdown) message — no textFormat. This is the failing case: the
+      // client renders the citation chips only partially inside the table cells.
+      await context.sendActivity(this.buildCitationTableReproActivity(false));
+      return;
+    }
+
+    if (selection === "EM Citations Table (repro)") {
+      // Byte-identical citations-in-a-table payload to "Non-EM Citations Table (repro)"
+      // but sent as an ExtendedMarkdown message (textFormat=extendedmarkdown). The only
+      // variable under test is textFormat, to confirm the EM path renders every citation
+      // inside the table.
+      await context.sendActivity(this.buildCitationTableReproActivity(true));
+      return;
+    }
+
+    if (selection === "Non-EM Citations Table (no sensitivity)") {
+      // Same citations-in-a-table payload as "Non-EM Citations Table (repro)" but with
+      // sensitivity/usageInfo explicitly omitted at both the message level and every
+      // citation level, to eliminate sensitivity as a possible cause of the client's
+      // citation-rendering issue. Regular (non-EM / markdown) message — no textFormat.
+      await context.sendActivity(
+        this.buildCitationTableReproActivity(false, { includeSensitivity: false })
+      );
+      return;
+    }
+
+    if (selection === "EM Citations Table (no sensitivity)") {
+      // Same as the no-sensitivity non-EM variant above but sent as an ExtendedMarkdown
+      // message (textFormat=extendedmarkdown). Sensitivity/usageInfo omitted at both the
+      // message level and every citation level.
+      await context.sendActivity(
+        this.buildCitationTableReproActivity(true, { includeSensitivity: false })
+      );
       return;
     }
 
@@ -460,6 +577,90 @@ export class SearchApp extends TeamsActivityHandler {
     );
   }
 
+  // Repro payload from bug #4630824 (Corina's comment): a markdown table whose cells
+  // carry citation markers [1] (x5), [2], [3], [4] together with 4 AI-generated
+  // citations (positions 1-4). The Web client renders the citation chips only partially
+  // inside table cells for a regular (non-EM / markdown) message. Sending the identical
+  // content as ExtendedMarkdown lets us confirm the EM path renders them all.
+  private citationTableReproText(): string {
+    return (
+      "| Item | Info |\n| --- | --- |\n" +
+      "| Program name | CT 03b - International Women's Day gift |\n" +
+      "| Gift | 01 Blindbox STYLE drink (SKU 40004083) [1] |\n" +
+      "| Store count | 67 selected stores [1] |\n" +
+      "| Slots per store | 10 first female customers [1] |\n" +
+      "| Total gifts | 670 units (10 x 67) |\n" +
+      "| Invoice condition | From 1,000,000d and above [1] |\n" +
+      "| Time window | Only 1 day - 08/03/2026 [2] |\n" +
+      "| Cost code (IO) | 260C090042 - Retail Mar_QTPN 8.3 [3] |\n" +
+      "| Gift method | Manual at store, noted on gift invoice [1] |\n" +
+      "| Participation limit | Each customer once, verified via phone/CCCD [4] |"
+    );
+  }
+
+  // The 4 Claim citations (positions 1-4) attached to the repro payload. Mirrors the
+  // SDK repro's CitationAppearance(name=`Source {pos}`, abstract=`Ref {pos}.`,
+  // url=`https://example.com/s{pos}`).
+  private citationTableReproCitations(): any[] {
+    return Array.from({ length: 4 }, (_, i) => {
+      const position = i + 1;
+      return {
+        "@type": "Claim",
+        position,
+        appearance: {
+          "@type": "DigitalDocument",
+          name: `Source ${position}`,
+          abstract: `Ref ${position}.`,
+          url: `https://example.com/s${position}`,
+        },
+      };
+    });
+  }
+
+  // Builds the bug #4630824 repro activity. The EM and non-EM variants are byte-identical
+  // except for textFormat, so the only variable under test is the message type.
+  private buildCitationTableReproActivity(
+    extendedMarkdown: boolean,
+    opts: { includeSensitivity?: boolean } = {}
+  ): Partial<Activity> {
+    const { includeSensitivity = true } = opts;
+
+    const citations = this.citationTableReproCitations();
+    const messageEntity: any = {
+      type: "https://schema.org/Message",
+      "@type": "Message",
+      "@context": "https://schema.org",
+      "@id": "",
+      additionalType: ["AIGeneratedContent"],
+      citation: citations,
+    };
+
+    if (!includeSensitivity) {
+      // No-sensitivity variant: guarantee the bot emits zero sensitivity/usageInfo at
+      // BOTH the citation level and the message level. (The base repro already carries
+      // none, so this is a defensive strip that stays correct if the repro changes.)
+      for (const c of citations) {
+        if (c?.appearance) {
+          delete c.appearance.usageInfo;
+        }
+        delete c?.usageInfo;
+      }
+      delete messageEntity.usageInfo;
+    }
+
+    const activity: Partial<Activity> = {
+      type: "message",
+      text: this.citationTableReproText(),
+      entities: [messageEntity],
+    };
+    if (extendedMarkdown) {
+      // textFormat: "extendedmarkdown" is a Teams-specific value not yet in the
+      // botbuilder Activity typings, so it's attached via index access.
+      (activity as any).textFormat = "extendedmarkdown";
+    }
+    return activity;
+  }
+
   // Generates `count` Claim citation entities, one per position 1..count.
   // Each one is a small unique fake source so APX has distinct items to count
   // against the MaxAllowedCitations limit.
@@ -485,6 +686,35 @@ export class SearchApp extends TeamsActivityHandler {
         },
       };
     });
+  }
+
+  // Returns a minimal "simple" adaptive card as an Attachment. Used by the
+  // "Non-EM AC + Text" and "EM AC + Text" menu options, which send this card as an
+  // attachment alongside text content in the SAME activity (non-EM vs EM transport).
+  private getSimpleAdaptiveCardAttachment(): Attachment {
+    return {
+      contentType: "application/vnd.microsoft.card.adaptive",
+      content: {
+        type: "AdaptiveCard",
+        $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
+        version: "1.5",
+        body: [
+          {
+            type: "TextBlock",
+            size: "Medium",
+            weight: "Bolder",
+            text: "Simple Adaptive Card",
+            wrap: true,
+          },
+          {
+            type: "TextBlock",
+            text:
+              "This card was sent as an attachment alongside text content in the same activity.",
+            wrap: true,
+          },
+        ],
+      },
+    };
   }
 
   // Returns the customer-picker adaptive card as an Attachment.
@@ -574,6 +804,7 @@ export class SearchApp extends TeamsActivityHandler {
       withCitations?: boolean;
       withMention?: { id: string; name: string };
       withPrivateEntities?: Record<string, unknown>;
+      attachments?: Attachment[];
     }
   ): Partial<Activity> {
     const schemaEntity: any = {
@@ -628,7 +859,34 @@ export class SearchApp extends TeamsActivityHandler {
     // textFormat: "extendedmarkdown" is a Teams-specific value not yet in the
     // botbuilder Activity typings, so it's attached via index access.
     (activity as any).textFormat = "extendedmarkdown";
+
+    if (opts.attachments && opts.attachments.length > 0) {
+      activity.attachments = opts.attachments;
+    }
+
     return activity;
+  }
+
+  // Fictitious credit-card content shared by "EM Credit Card (DLP)" (#24) and
+  // "Non-EM Credit Card (DLP)" (#25) so both send byte-identical content and the only
+  // variable under test is EM vs non-EM (textFormat). The number is Luhn-valid and
+  // Visa-format but NOT a real card (and deliberately not the commonly-excluded test
+  // number 4111111111111111); the brand + expiry + CVV within 300 chars push Purview's
+  // built-in "Credit Card Number" sensitive info type to high confidence.
+  // Ref: https://learn.microsoft.com/en-us/purview/sit-defn-credit-card-number
+  private dlpCreditCardMarkdown(): string {
+    return (
+      `# 🔐 DLP test — sensitive financial data\n\n` +
+      `This is a **fictitious test message** from prem-test-me-bot to exercise the ` +
+      `tenant's Microsoft Purview DLP policy for financial information. The card ` +
+      `details below are **not real**.\n\n` +
+      `- **Cardholder:** Test User\n` +
+      `- **Card type:** Visa\n` +
+      `- **Card number:** 4532 0151 1283 0978\n` +
+      `- **Expires:** 11/27\n` +
+      `- **CVV:** 123\n\n` +
+      `Expected: your DLP policy should flag or block this message.`
+    );
   }
 
   // Builds the non-EM "AI + sensitivity + feedback" message used by menu option
