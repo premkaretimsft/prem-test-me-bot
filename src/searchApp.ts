@@ -137,6 +137,8 @@ export class SearchApp extends TeamsActivityHandler {
     "EM Citations Table (repro)",
     "Non-EM Citations Table (no sensitivity)",
     "EM Citations Table (no sensitivity)",
+    "EM Inline Images (url + base64)",
+    "Non-EM Inline Images (url + base64)",
   ];
 
   // Fixed user identity used by the "EM Mention (premk)" / "Non-EM Mention (premk)" menu
@@ -376,6 +378,28 @@ export class SearchApp extends TeamsActivityHandler {
       await context.sendActivity(
         this.buildExtendedMarkdownActivity(context, this.dlpCreditCardMarkdown(), {})
       );
+      return;
+    }
+
+    if (selection === "EM Inline Images (url + base64)") {
+      // ExtendedMarkdown message carrying BOTH inline image kinds so the outgoing payload can be
+      // compared side by side: the https URLs should reach the client URLP-wrapped
+      // (.../v1/url/content?url=...) with no AMS document created, while the base64 images should be
+      // uploaded to AMS (.../v1/objects/{id}/views/img_preview) and listed in amsreferences.
+      await context.sendActivity(
+        this.buildExtendedMarkdownActivity(context, this.inlineImagesMarkdown("ExtendedMarkdown"), {})
+      );
+      return;
+    }
+
+    if (selection === "Non-EM Inline Images (url + base64)") {
+      // Byte-identical content sent as a REGULAR message: textFormat is intentionally left unset so
+      // APX takes the default markdown->HTML path. This is the proven baseline the EM option above is
+      // meant to match.
+      await context.sendActivity({
+        type: "message",
+        text: this.inlineImagesMarkdown("Non-ExtendedMarkdown"),
+      });
       return;
     }
 
@@ -874,6 +898,41 @@ export class SearchApp extends TeamsActivityHandler {
   // number 4111111111111111); the brand + expiry + CVV within 300 chars push Purview's
   // built-in "Credit Card Number" sensitive info type to high confidence.
   // Ref: https://learn.microsoft.com/en-us/purview/sit-defn-credit-card-number
+  // Shared payload for the two "Inline Images" menu options. Sending byte-identical content down the
+  // EM and non-EM paths isolates the message type as the only variable, so the outgoing payloads can
+  // be compared directly for how each image kind is handled:
+  //   - https URLs   -> expected URLP-wrapped (.../v1/url/content?url=...), no AMS document
+  //   - base64 data  -> expected uploaded to AMS (.../v1/objects/{id}/views/img_preview)
+  // The base64 images are tiny 1x1 PNGs (red / blue / green) so the message stays small; they render
+  // as single-colour dots, which is enough to confirm the upload and rewrite happened.
+  private inlineImagesMarkdown(label: string): string {
+    const redDot =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    const blueDot =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const greenDot =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+    const trelloUrl =
+      "https://cdn2.iconfinder.com/data/icons/social-icons-33/128/Trello-128.png";
+    const slackUrl =
+      "https://cdn2.iconfinder.com/data/icons/social-icons-33/128/Slack-128.png";
+
+    return (
+      `# Inline image handling — ${label}\n\n` +
+      `Two **https URL** images and three **base64** images inline with text, so the outgoing ` +
+      `payload shows how each kind is handled.\n\n` +
+      `**1. External URL image (Trello):** ![trello](${trelloUrl}) — expected to arrive URLP-wrapped.\n\n` +
+      `**2. Inline base64 image (red):** ![red](${redDot}) — expected to arrive as an AMS object.\n\n` +
+      `**3. External URL image (Slack):** ![slack](${slackUrl}) — expected to arrive URLP-wrapped.\n\n` +
+      `**4. Inline base64 image (blue):** ![blue](${blueDot}) — expected to arrive as an AMS object.\n\n` +
+      `**5. Inline base64 image (green):** ![green](${greenDot}) — expected to arrive as an AMS object.\n\n` +
+      `---\n\n` +
+      `Check the message payload: URL images should carry \`/v1/url/content?url=\` and base64 images ` +
+      `should carry \`/v1/objects/{id}/views/img_preview\`.`
+    );
+  }
+
   private dlpCreditCardMarkdown(): string {
     return (
       `# 🔐 DLP test — sensitive financial data\n\n` +
